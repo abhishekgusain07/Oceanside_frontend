@@ -1,0 +1,152 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+Architectural Blueprint: MVP
+
+This document outlines the system architecture for a multi-track audio/video recording platform, leveraging a Next.js frontend, a FastAPI backend, and a dual-track approach for live communication and high-quality local recording.
+
+High-Level Diagram
+
+                     +---------------------------+
+                     |   Cloud Storage (S3/GCS)  |
+                     | (High-Quality Recordings) |
+                     +-------------+-------------+
+                                   ^
+          (4. Direct Upload)       |       (4. Direct Upload)
++----------------------------------+----------------------------------+
+|                                  |                                  |
+|  +------------------------+      |       +------------------------+  |
+|  |   Participant A        |      |       |   Participant B        |  |
+|  |  (Next.js Frontend)    |      |       |  (Next.js Frontend)    |  |
+|  +------------------------+      |       +------------------------+  |
+|      |         ^                 |                  |        ^      |
+|      | (2.      | (3. Local       |                  | (2.     | (3. Local
+|      | WebRTC   | Recording)     |                  | WebRTC  | Recording)
+|      | Live     |                |                  | Live    |
+|      | Stream)  |                |                  | Stream) |
+|      v         |                 |                  v        |      |
++------+---------+-----------------|------------------+--------+------+
+       < - - - - - - - - - - - >   |   < - - - - - - - - - - - - >
+        (Peer-to-Peer Connection)  |    (Peer-to-Peer Connection)
+                                   |
+                 +-----------------v------------------+
+                 |       FastAPI Backend             |
+                 | (Signaling & Session Control)     |
+                 +-----------------------------------+
+                       ^            ^            ^
+                       |            |            | (1. HTTP API Calls)
+           (1. WebSocket for      (1. WebSocket for
+               Signaling)           Signaling)
+
+
+1. Core Components & Responsibilities
+
+a. Next.js Frontend (The "Recording Studio")
+
+Role: This is the user-facing application where participants interact.
+
+Responsibilities:
+
+UI/UX: Renders the video call interface, controls, and session information.
+
+Session Management: Handles the logic for creating, joining, and leaving a recording session.
+
+WebRTC Client: Manages the entire lifecycle of the peer-to-peer WebRTC connection. It captures the user's camera/microphone, initiates the connection handshake, and displays the incoming streams from other participants.
+
+Local Recorder: Utilizes the browser's MediaRecorder API to record the user's own audio and video streams locally at the highest possible quality, completely independent of the WebRTC stream's quality.
+
+Uploader: Chunks the local recordings into manageable pieces (e.g., every 15-30 seconds) and uploads them directly to cloud storage in the background using pre-signed URLs provided by the backend.
+
+b. FastAPI Backend (The "Control Tower")
+
+Role: The central nervous system of the platform. It doesn't handle any heavy media traffic but orchestrates everything.
+
+Responsibilities:
+
+User & Session API: Provides standard RESTful endpoints for user authentication, creating new recording sessions (/api/sessions), and getting session details.
+
+WebRTC Signaling Server: This is the most critical backend role. It uses WebSockets to enable communication between participants before a direct peer-to-peer connection is established. Its job is to relay messages (like connection offers, answers, and network candidates) from one participant to all others in the session.
+
+Upload Orchestration: Provides an API endpoint (e.g., /api/generate-upload-url) that generates and returns secure, short-lived pre-signed URLs for the client to upload files directly to cloud storage. This prevents the backend from becoming a bottleneck for large file uploads.
+
+State Management: Keeps track of who is in which session and their status (e.g., connected, recording, finished).
+
+c. Cloud Storage (The "Vault")
+
+Role: The permanent, scalable, and secure destination for the high-quality recordings.
+
+Examples: AWS S3, Google Cloud Storage (GCS), Cloudflare R2.
+
+Interaction: Files are written directly from the participants' browsers. The backend interacts with it later for post-processing (e.g., triggering a function to combine the uploaded chunks).
+
+2. The Architectural Flow: A Step-by-Step Session
+
+Here is the precise sequence of events for a two-participant session.
+
+Step 1: Host Creates a Session
+
+The Host opens the Next.js app and clicks "Create Session".
+
+The frontend sends a POST request to the FastAPI backend: POST /api/sessions/create.
+
+The backend creates a new session record in its database, generates a unique session ID, and returns it to the host's frontend. The host is now in the "room".
+
+Step 2: Guest Joins the Session
+
+The Host shares a join link (e.g., https://yourapp.com/session/{session_id}).
+
+The Guest clicks the link. Their Next.js app loads and immediately establishes a WebSocket connection to the FastAPI signaling server: wss://api.yourapp.com/ws/{session_id}. The Host's app is already connected to this same WebSocket endpoint.
+
+Step 3: The WebRTC "Handshake" (Establishing the Live Call)
+
+This all happens in seconds via the FastAPI WebSocket connection.
+
+Offer: The Guest's browser, knowing it wants to connect, creates a WebRTC "offer" (a block of text describing its media capabilities, called an SDP). It sends this offer to the FastAPI server over the WebSocket.
+
+Relay: The FastAPI server receives this offer and relays it to every other participant in the session (in this case, just the Host).
+
+Answer: The Host's browser receives the offer and creates an "answer" (its own SDP). It sends this answer back to the FastAPI server.
+
+Relay Back: FastAPI relays the Host's answer to the Guest.
+
+ICE Candidates: Simultaneously, both browsers are exchanging network path information (ICE candidates) through the signaling server.
+
+Connection: Once they have enough information, a direct, encrypted, peer-to-peer WebRTC connection is established between the Host and Guest. They can now see and hear each other in real-time. The FastAPI server is no longer involved in this live stream.
+
+Step 4: Recording & Uploading (The Dual-Track Magic)
+
+The Host clicks the main "Record" button in the UI.
+
+A start_recording command is sent to all participants over the WebSocket.
+
+On each participant's browser, two things happen in parallel:
+
+Live Stream Continues: The WebRTC stream continues as normal, possibly at a lower bitrate for smooth real-time communication.
+
+Local Recording Begins: The Next.js app takes the high-quality source stream (from the camera/mic) and pipes it into a MediaRecorder instance. This starts creating a pristine local recording file.
+
+Chunk & Upload Loop:
+
+Every X seconds (e.g., 20s), the MediaRecorder makes a chunk of the recording available.
+
+The Next.js app's uploader gets this chunk (Blob).
+
+It calls the backend: GET /api/generate-upload-url?filename=participant_id_track_1_chunk_N.webm.
+
+The FastAPI backend generates a pre-signed URL for the cloud storage bucket and returns it.
+
+The frontend immediately uses this URL to PUT the video/audio chunk directly to the cloud storage bucket.
+
+This loop continues in the background until the recording stops.
+
+Step 5: Ending the Session
+
+The Host clicks "Stop Recording". A stop_recording command is sent.
+
+Each client's MediaRecorder is stopped. The final chunk of data is uploaded.
+
+A final API call can be made to the backend (POST /api/sessions/end) to notify it that all uploads are complete. The backend can now mark the session as "Ready for Processing".
+
+This architecture ensures that even if a participant's internet connection drops completely, their local recording continues uninterrupted. As soon as their connection is restored, the uploader can resume sending the saved chunks to the cloud.
