@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PrintMoney - SaaS Template",
+  title: "ocenside - SaaS Template",
   description: "Comprehensive SaaS starter template to ship your ideas blazingly fast",
 };
 
@@ -24,19 +24,19 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <meta property="og:image" content="/printmoney.png" />
+      <meta property="og:image" content="/ocenside.png" />
       <meta property="og:image:type" content="image/png" />
       <meta property="og:image:width" content="1200" />
       <meta property="og:image:height" content="630" />
       <meta
         property="og:site_name"
-        content="PrintMoney"
+        content="ocenside"
       />
       <meta
         property="og:url"
-        content="https://printmoney.dev/"
+        content="https://ocenside.dev/"
       />
-      <meta name="twitter:image" content="/printmoney.png" />
+      <meta name="twitter:image" content="/ocenside.png" />
       <meta name="twitter:image:type" content="image/png" />
       <meta name="twitter:image:width" content="1200" />
       <meta name="twitter:image:height" content="630" />

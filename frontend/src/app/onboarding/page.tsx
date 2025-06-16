@@ -105,7 +105,7 @@ export default function OnboardingPage() {
             <span className="text-white text-xl font-bold">P</span>
           </div>
         </div>
-        <h1 className="text-2xl font-bold text-center text-slate-800">Printmoney</h1>
+        <h1 className="text-2xl font-bold text-center text-slate-800">ocenside</h1>
       </div>
 
       {/* Step Indicators */}
