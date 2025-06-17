@@ -33,6 +33,10 @@ const nextConfig = {
   images: {
     domains: ['assets.aceternity.com'],
   },
+  env: {
+    NEXT_PUBLIC_WEBSOCKET_URL: process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'ws://localhost:8000',
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+  },
   /* config options here */
   async rewrites() {
     // Only set up PostHog rewrites if enabled
@@ -56,6 +60,8 @@ const nextConfig = {
   },
   // Only needed if PostHog is enabled
   skipTrailingSlashRedirect: config.analytics.posthog.enabled,
+  reactStrictMode: true,
+  swcMinify: true,
 };
 
 // Sentry configuration options
