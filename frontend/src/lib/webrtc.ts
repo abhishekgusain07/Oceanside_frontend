@@ -256,6 +256,8 @@ export class WebRTCManager {
    * Clean up all connections
    */
   cleanup(): void {
+    console.log('🧹 WebRTC cleanup called');
+    
     // Close all peer connections
     this.peerConnections.forEach((pc, participantId) => {
       pc.close();
@@ -265,10 +267,15 @@ export class WebRTCManager {
 
     // Stop local stream
     if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
+      console.log('🛑 Stopping media tracks...');
+      this.localStream.getTracks().forEach((track, index) => {
+        console.log(`Stopping ${track.kind} track ${index}:`, track.id);
         track.stop();
       });
       this.localStream = null;
+      console.log('✅ All media tracks stopped and stream cleared');
+    } else {
+      console.log('No local stream to cleanup');
     }
   }
 

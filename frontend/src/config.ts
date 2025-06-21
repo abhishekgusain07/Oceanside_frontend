@@ -23,7 +23,7 @@ const config = {
     },
     api: {
       baseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000',
-              endpoints: {
+            endpoints: {
           sessions: '/api/sessions',
           createSession: '/api/sessions/create',
           joinSession: (sessionId: string) => `/api/sessions/${sessionId}/join`,

@@ -89,13 +89,35 @@ export default function SessionPage() {
     loadSession();
   }, [sessionId]);
 
+  // Function to refresh session data
+  const refreshSessionData = useCallback(async () => {
+    if (!sessionId) return;
+    
+    try {
+      console.log('🔄 Refreshing session data...');
+      const sessionData = await SessionAPI.getSession(sessionId);
+      setSession(sessionData);
+      setParticipants(sessionData.participants);
+      console.log('✅ Session data refreshed:', {
+        participantCount: sessionData.participant_count,
+        totalParticipants: sessionData.participants.length
+      });
+    } catch (err: any) {
+      console.error('Failed to refresh session data:', err);
+    }
+  }, [sessionId]);
+
   // WebSocket message handler
   const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
     console.log('Received WebSocket message:', message);
 
     switch (message.type) {
       case MessageType.PARTICIPANT_JOINED:
-        toast.success(`${message.participant_id} joined the session`);
+        toast.success(`Participant joined the session`);
+        
+        // Refresh session data to get updated participant count
+        refreshSessionData();
+        
         if (rtcManager.current && message.participant_id !== participantId.current) {
           // Initiate connection to new participant
           rtcManager.current.connectToParticipant(message.participant_id!);
@@ -103,7 +125,11 @@ export default function SessionPage() {
         break;
 
       case MessageType.PARTICIPANT_LEFT:
-        toast.info(`${message.participant_id} left the session`);
+        toast.info(`Participant left the session`);
+        
+        // Refresh session data to get updated participant count
+        refreshSessionData();
+        
         if (rtcManager.current) {
           rtcManager.current.disconnectFromParticipant(message.participant_id!);
         }
@@ -131,7 +157,7 @@ export default function SessionPage() {
         console.log('Recording status:', message.data);
         break;
     }
-  }, []);
+  }, [refreshSessionData]);
 
   // Join session
   const handleJoinSession = async (e: React.FormEvent) => {
@@ -159,7 +185,10 @@ export default function SessionPage() {
         sessionId,
         participantId: participantId.current,
         onMessage: handleWebSocketMessage,
-        onConnectionChange: setIsWebSocketConnected,
+        onConnectionChange: (connected) => {
+          console.log('🔌 WebSocket connection status changed:', connected);
+          setIsWebSocketConnected(connected);
+        },
         onError: (error) => {
           console.error('WebSocket error:', error);
           toast.error('WebSocket connection failed');
@@ -167,7 +196,9 @@ export default function SessionPage() {
       });
 
       const wsUrl = SessionAPI.getWebSocketUrl(sessionId, participantId.current);
+      console.log('🔗 Connecting to WebSocket:', wsUrl);
       await wsManager.current.connect(wsUrl);
+      console.log('✅ WebSocket connected successfully');
 
       // Initialize WebRTC
       rtcManager.current = new WebRTCManager({
@@ -197,10 +228,37 @@ export default function SessionPage() {
 
       // Get user media
       console.log('Attempting to get user media...');
-      const stream = await rtcManager.current.initializeLocalStream();
+      const stream = await rtcManager.current!.initializeLocalStream();
       console.log('Got media stream:', stream);
       console.log('Video tracks:', stream.getVideoTracks());
       console.log('Audio tracks:', stream.getAudioTracks());
+      
+      // Add event listeners to track when stream ends
+      stream.addEventListener('inactive', () => {
+        console.error('🚨 MediaStream became inactive!');
+      });
+      
+      stream.getVideoTracks().forEach((track, index) => {
+        console.log(`Setting up video track ${index} event listeners`);
+        track.addEventListener('ended', () => {
+          console.error(`🚨 Video track ${index} ended!`, track);
+          console.error('Track state:', track.readyState);
+          console.error('Track enabled:', track.enabled);
+        });
+        track.addEventListener('mute', () => {
+          console.warn(`⚠️ Video track ${index} muted!`);
+        });
+        track.addEventListener('unmute', () => {
+          console.log(`✅ Video track ${index} unmuted!`);
+        });
+      });
+      
+      stream.getAudioTracks().forEach((track, index) => {
+        console.log(`Setting up audio track ${index} event listeners`);
+        track.addEventListener('ended', () => {
+          console.error(`🚨 Audio track ${index} ended!`, track);
+        });
+      });
       
       setLocalStream(stream);
 
@@ -253,7 +311,7 @@ export default function SessionPage() {
     }
   };
 
-  // Set local stream to video element when available
+  // Set up local video stream when available
   useEffect(() => {
     if (localStream && localVideoRef.current) {
       console.log('Setting local stream to video element');
@@ -261,9 +319,42 @@ export default function SessionPage() {
     }
   }, [localStream]);
 
-  // Cleanup on unmount
+  // Enhanced effect to handle video assignment more reliably
   useEffect(() => {
-    return () => {
+    const assignStreamToVideo = () => {
+      if (localStream && localVideoRef.current && !localVideoRef.current.srcObject) {
+        console.log('🎥 Assigning stream to video element');
+        console.log('Stream active:', localStream.active);
+        console.log('Video tracks:', localStream.getVideoTracks().length);
+        console.log('Video element:', localVideoRef.current);
+        
+        localVideoRef.current.srcObject = localStream;
+        
+        // Force play if needed
+        const playPromise = localVideoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.then(() => {
+            console.log('✅ Video started playing');
+          }).catch(error => {
+            console.log('⚠️ Video play failed:', error);
+          });
+        }
+      }
+    };
+
+    // Try immediately
+    assignStreamToVideo();
+    
+    // Also try after a short delay to handle timing issues
+    const timeoutId = setTimeout(assignStreamToVideo, 100);
+    
+    return () => clearTimeout(timeoutId);
+  }, [localStream, isJoined]);
+
+  // Cleanup on unmount and page unload
+  useEffect(() => {
+    const cleanup = () => {
+      console.log('🧹 Running cleanup...');
       if (rtcManager.current) {
         rtcManager.current.cleanup();
       }
@@ -271,7 +362,34 @@ export default function SessionPage() {
         wsManager.current.disconnect();
       }
     };
-  }, []);
+
+    // Handle page unload (browser close/refresh)
+    const handleBeforeUnload = () => {
+      console.log('🚪 Page unloading, cleaning up...');
+      cleanup();
+    };
+
+    // Handle visibility change (tab switch)
+    const handleVisibilityChange = () => {
+      if (document.hidden && isJoined) {
+        // Optional: You might want to pause video/audio when tab is hidden
+        console.log('Tab became hidden');
+      } else if (!document.hidden && isJoined) {
+        console.log('Tab became visible');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // ONLY cleanup on component unmount, NOT when isJoined changes
+    return () => {
+      console.log('🔄 Component unmounting, cleaning up...');
+      cleanup();
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []); // Remove isJoined from dependencies!
 
   if (isLoading) {
     return (
@@ -326,7 +444,14 @@ export default function SessionPage() {
               </div>
               <div className="flex items-center gap-1 text-gray-600">
                 <Users className="h-4 w-4" />
-                <span>{participants.length}/{session.max_participants}</span>
+                <span>{session.participant_count}/{session.max_participants}</span>
+              </div>
+              {/* Debug info */}
+              <div className="text-xs text-gray-500">
+                <div>WS: {isWebSocketConnected ? '✅' : '❌'}</div>
+                <div>Joined: {isJoined ? '✅' : '❌'}</div>
+                <div>Active: {session.participant_count} | Total: {participants.length}</div>
+                <div>Active Participants: {participants.filter(p => p.status === 'active' || p.status === 'joined').map(p => p.id.slice(0, 8)).join(', ')}</div>
               </div>
             </div>
           </div>
@@ -412,8 +537,65 @@ export default function SessionPage() {
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-64 bg-gray-900 rounded-lg"
+                  className="w-full h-64 bg-gray-900 rounded-lg border-2 border-red-500"
+                  onLoadedMetadata={() => console.log('Video metadata loaded')}
+                  onError={(e) => console.error('Video error:', e)}
+                  onCanPlay={() => console.log('Video can play')}
                 />
+                {/* Debug info */}
+                <div className="mt-2 text-xs text-gray-600">
+                  <p>Stream: {localStream ? 'Connected' : 'Not connected'}</p>
+                  <p>Tracks: {localStream ? `Video: ${localStream.getVideoTracks().length}, Audio: ${localStream.getAudioTracks().length}` : 'None'}</p>
+                  <Button 
+                    size="sm" 
+                    variant="outline" 
+                    className="mt-2"
+                    onClick={() => {
+                      console.log('=== DEBUG INFO ===');
+                      console.log('localStream:', localStream);
+                      console.log('localVideoRef.current:', localVideoRef.current);
+                      console.log('localVideoRef.current.srcObject:', localVideoRef.current?.srcObject);
+                      
+                      if (localVideoRef.current) {
+                        const video = localVideoRef.current;
+                        console.log('Video element dimensions:', {
+                          clientWidth: video.clientWidth,
+                          clientHeight: video.clientHeight,
+                          videoWidth: video.videoWidth,
+                          videoHeight: video.videoHeight,
+                          readyState: video.readyState,
+                          paused: video.paused,
+                          muted: video.muted,
+                          autoplay: video.autoplay
+                        });
+                        console.log('Video element computed style:', getComputedStyle(video).display);
+                      }
+                      
+                      if (localStream) {
+                        console.log('Video tracks:', localStream.getVideoTracks());
+                        console.log('Audio tracks:', localStream.getAudioTracks());
+                        localStream.getVideoTracks().forEach((track, i) => {
+                          console.log(`Video track ${i}:`, track.getSettings(), track.enabled, track.readyState);
+                        });
+                      }
+                      // Force re-assignment
+                      if (localStream && localVideoRef.current) {
+                        console.log('Force re-assigning stream...');
+                        localVideoRef.current.srcObject = localStream;
+                        const playPromise = localVideoRef.current.play();
+                        if (playPromise !== undefined) {
+                          playPromise.then(() => {
+                            console.log('✅ Force play succeeded');
+                          }).catch(error => {
+                            console.log('⚠️ Force play failed:', error);
+                          });
+                        }
+                      }
+                    }}
+                  >
+                    Debug Video
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 

@@ -159,12 +159,14 @@ export class WebSocketManager {
    */
   private startHeartbeat(): void {
     this.heartbeatInterval = setInterval(() => {
-      this.sendMessage({
-        type: MessageType.HEARTBEAT,
-        participant_id: this.config.participantId,
-        timestamp: new Date().toISOString()
-      });
-    }, 30000); // Send heartbeat every 30 seconds
+      if (this.isConnected()) {
+        this.sendMessage({
+          type: MessageType.HEARTBEAT,
+          participant_id: this.config.participantId,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }, 15000); // Send heartbeat every 15 seconds
   }
 
   /**

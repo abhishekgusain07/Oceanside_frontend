@@ -96,11 +96,13 @@ export interface RTCIceCandidateMessage {
 export interface ParticipantJoinedMessage {
   type: MessageType.PARTICIPANT_JOINED;
   participant_id: string;
+  session_participants: string[];
   timestamp: string;
 }
 
 export interface ParticipantLeftMessage {
   type: MessageType.PARTICIPANT_LEFT;
   participant_id: string;
+  session_participants: string[];
   timestamp: string;
 } 

@@ -160,6 +160,9 @@ export default function Home() {
               <Link href="/createsession" className="bg-blue-600 text-white hover:bg-blue-700 px-8 py-3 rounded-md font-medium text-lg shadow-lg transition-all">
                 Create Recording Session
               </Link>
+              <Link href="/session-manager" className="bg-gray-600 text-white hover:bg-gray-700 px-8 py-3 rounded-md font-medium text-lg transition-all">
+                Manage Sessions
+              </Link>
               <Link href="#features" className="border border-blue-600 text-blue-600 hover:bg-blue-50 px-8 py-3 rounded-md font-medium text-lg transition-all">
                 Learn More
               </Link>
