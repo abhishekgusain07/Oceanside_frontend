@@ -196,12 +196,13 @@ export default function SessionPage() {
       }, participantId.current);
 
       // Get user media
+      console.log('Attempting to get user media...');
       const stream = await rtcManager.current.initializeLocalStream();
-      setLocalStream(stream);
+      console.log('Got media stream:', stream);
+      console.log('Video tracks:', stream.getVideoTracks());
+      console.log('Audio tracks:', stream.getAudioTracks());
       
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      setLocalStream(stream);
 
       setIsJoined(true);
       toast.success('Successfully joined the session!');
@@ -251,6 +252,14 @@ export default function SessionPage() {
       setIsAudioEnabled(enabled);
     }
   };
+
+  // Set local stream to video element when available
+  useEffect(() => {
+    if (localStream && localVideoRef.current) {
+      console.log('Setting local stream to video element');
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
 
   // Cleanup on unmount
   useEffect(() => {
