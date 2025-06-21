@@ -55,6 +55,12 @@ export default function Home() {
     icon?: LucideIcon;
   }> = [
     {
+      title: "Multi-Track Recording",
+      description:
+        "High-quality audio/video recording sessions with WebRTC peer-to-peer connections and real-time WebSocket signaling.",
+      link: "/createsession",
+    },
+    {
       title: "Authentication",
       description:
         "Complete auth system with email, social login, magic links, and MFA support for secure user management.",
@@ -116,6 +122,48 @@ export default function Home() {
             <Link href="/dashboard" className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-3 rounded-md font-medium text-lg shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 transition-all">
               Get Started
             </Link>
+          </div>
+        </section>
+
+        {/* Recording Platform Section */}
+        <section className="py-16 px-4 md:px-8 lg:px-16 bg-gradient-to-br from-blue-50 to-indigo-100">
+          <div className="max-w-4xl mx-auto text-center">
+            <h2 className="text-4xl font-bold mb-6 text-gray-900">Multi-Track Recording Platform</h2>
+            <p className="text-xl text-gray-600 mb-8 max-w-3xl mx-auto">
+              Create high-quality recording sessions with real-time WebRTC connections. 
+              Perfect for podcasts, interviews, and collaborative content creation.
+            </p>
+            <div className="grid md:grid-cols-3 gap-6 mb-10">
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  🎙️
+                </div>
+                <h3 className="text-lg font-semibold mb-2">High-Quality Audio</h3>
+                <p className="text-gray-600 text-sm">Local recording ensures pristine audio quality, independent of network conditions</p>
+              </div>
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  🔗
+                </div>
+                <h3 className="text-lg font-semibold mb-2">Real-time Connection</h3>
+                <p className="text-gray-600 text-sm">WebSocket signaling with WebRTC peer-to-peer for low-latency communication</p>
+              </div>
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  ☁️
+                </div>
+                <h3 className="text-lg font-semibold mb-2">Cloud Storage</h3>
+                <p className="text-gray-600 text-sm">Automatic upload to cloud storage with chunk-based reliability</p>
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+              <Link href="/createsession" className="bg-blue-600 text-white hover:bg-blue-700 px-8 py-3 rounded-md font-medium text-lg shadow-lg transition-all">
+                Create Recording Session
+              </Link>
+              <Link href="#features" className="border border-blue-600 text-blue-600 hover:bg-blue-50 px-8 py-3 rounded-md font-medium text-lg transition-all">
+                Learn More
+              </Link>
+            </div>
           </div>
         </section>
         

@@ -1,6 +1,6 @@
 {
-  "id": "08676803-cfbc-4065-9ca3-c7eca0f214dd",
-  "prevId": "02954ea9-1edd-4a6a-ada8-5c715eccfe3c",
+  "id": "87bc2528-fd36-46ee-bd89-f539fb0949e6",
+  "prevId": "08676803-cfbc-4065-9ca3-c7eca0f214dd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -253,7 +253,7 @@
           "name": "display_name",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "is_host": {
           "name": "is_host",
@@ -267,20 +267,26 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'joined'"
+          "default": "'invited'"
         },
         "joined_at": {
           "name": "joined_at",
           "type": "timestamp",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
         },
         "left_at": {
           "name": "left_at",
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {},

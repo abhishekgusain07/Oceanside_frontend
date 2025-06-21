@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, boolean, uuid } from "drizzle-orm/pg-core";
 			
 export const user = pgTable("user", {
 	id: text("id").primaryKey(),
@@ -96,4 +96,30 @@ export const feedback = pgTable("feedback", {
 	userId: text("user_id"),
 	feedbackContent: text("feedback_content"),
 	stars: integer().notNull()
-})
+});
+
+// Recording Session Tables
+export const sessions = pgTable("sessions", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	title: text("title").notNull(),
+	description: text("description"),
+	host_user_id: text("host_user_id").notNull(),
+	status: text("status").notNull().default("created"), // created, started, ended
+	started_at: timestamp("started_at"),
+	ended_at: timestamp("ended_at"),
+	max_participants: integer("max_participants").notNull().default(4),
+	created_at: timestamp("created_at").notNull().defaultNow(),
+	updated_at: timestamp("updated_at").notNull().defaultNow()
+});
+
+export const participants = pgTable("participants", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	session_id: uuid("session_id").notNull().references(() => sessions.id, { onDelete: 'cascade' }),
+	user_id: text("user_id").notNull(),
+	display_name: text("display_name"),
+	is_host: boolean("is_host").notNull().default(false),
+	status: text("status").notNull().default("invited"), // invited, joined, left, disconnected
+	joined_at: timestamp("joined_at"),
+	left_at: timestamp("left_at"),
+	created_at: timestamp("created_at").notNull().defaultNow()
+});
