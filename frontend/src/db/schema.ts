@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp, boolean, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, boolean, uuid, pgEnum } from "drizzle-orm/pg-core";
 			
 export const user = pgTable("user", {
 	id: text("id").primaryKey(),
@@ -98,28 +98,90 @@ export const feedback = pgTable("feedback", {
 	stars: integer().notNull()
 });
 
-// Recording Session Tables
-export const sessions = pgTable("sessions", {
+// from here onwards are the tables of new Socket.IO + Celery architecture, upwards are of authentication related dont mess with them, 
+
+// Recording Status Enum - matches backend RecordingStatus exactly (lowercase values)
+export const recordingStatusEnum = pgEnum('recordingstatus', ['created', 'active', 'processing', 'completed', 'failed']);
+
+// Recording Table - matches backend Recording model exactly
+export const recordings = pgTable("recordings", {
 	id: uuid("id").primaryKey().defaultRandom(),
-	title: text("title").notNull(),
-	description: text("description"),
+	room_id: text("room_id").notNull().unique(),
+	
+	// User who created the recording
 	host_user_id: text("host_user_id").notNull(),
-	status: text("status").notNull().default("created"), // created, started, ended
-	started_at: timestamp("started_at"),
-	ended_at: timestamp("ended_at"),
-	max_participants: integer("max_participants").notNull().default(4),
-	created_at: timestamp("created_at").notNull().defaultNow(),
-	updated_at: timestamp("updated_at").notNull().defaultNow()
+	
+	// Recording metadata
+	title: text("title"),
+	description: text("description"),
+	
+	// Status tracking
+	status: recordingStatusEnum("status").notNull().default('created'),
+	
+	// Timestamps
+	created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	started_at: timestamp("started_at", { withTimezone: true }),
+	ended_at: timestamp("ended_at", { withTimezone: true }),
+	processed_at: timestamp("processed_at", { withTimezone: true }),
+	
+	// Video processing results
+	video_url: text("video_url"), // Final processed video URL
+	thumbnail_url: text("thumbnail_url"),
+	duration_seconds: integer("duration_seconds"),
+	
+	// Processing metadata
+	processing_error: text("processing_error"),
+	processing_attempts: integer("processing_attempts").notNull().default(0),
+	
+	// Settings
+	max_participants: integer("max_participants").notNull().default(10)
 });
 
-export const participants = pgTable("participants", {
+// Guest Token Table - matches backend GuestToken model exactly
+export const guest_tokens = pgTable("guest_tokens", {
 	id: uuid("id").primaryKey().defaultRandom(),
-	session_id: uuid("session_id").notNull().references(() => sessions.id, { onDelete: 'cascade' }),
-	user_id: text("user_id").notNull(),
-	display_name: text("display_name"),
-	is_host: boolean("is_host").notNull().default(false),
-	status: text("status").notNull().default("invited"), // invited, joined, left, disconnected
-	joined_at: timestamp("joined_at"),
-	left_at: timestamp("left_at"),
-	created_at: timestamp("created_at").notNull().defaultNow()
+	recording_id: uuid("recording_id").notNull().references(() => recordings.id, { onDelete: 'cascade' }),
+	
+	// Token details
+	token: text("token").notNull().unique(),
+	guest_name: text("guest_name"),
+	
+	// Validity
+	created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+	used_at: timestamp("used_at", { withTimezone: true }),
+	is_active: boolean("is_active").notNull().default(true),
+	
+	// Usage tracking
+	uses_remaining: integer("uses_remaining").notNull().default(1) // Single-use by default
+});
+
+// Recording Chunk Table - matches backend RecordingChunk model exactly
+export const recording_chunks = pgTable("recording_chunks", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	recording_id: uuid("recording_id").notNull().references(() => recordings.id, { onDelete: 'cascade' }),
+	
+	// Participant info
+	participant_id: text("participant_id").notNull(),
+	participant_name: text("participant_name"),
+	
+	// Chunk metadata
+	chunk_index: integer("chunk_index").notNull(), // Order of the chunk
+	filename: text("filename").notNull(),
+	file_url: text("file_url").notNull(), // Cloud storage URL
+	file_size: integer("file_size"),
+	
+	// Media information
+	media_type: text("media_type").notNull(), // 'video', 'audio'
+	codec: text("codec"),
+	duration_seconds: integer("duration_seconds"),
+	
+	// Timestamps
+	created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	recording_started_at: timestamp("recording_started_at", { withTimezone: true }).notNull(), // When this chunk recording started
+	recording_ended_at: timestamp("recording_ended_at", { withTimezone: true }).notNull(),   // When this chunk recording ended
+	
+	// Processing status
+	is_processed: boolean("is_processed").notNull().default(false),
+	processing_error: text("processing_error")
 });

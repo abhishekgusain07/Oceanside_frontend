@@ -1,63 +1,10 @@
-// Session types
-export interface SessionCreateRequest {
-  user_id: string;
-  title: string;
-  description?: string;
-  max_participants?: number;
-}
+// TODO: Add new recording types here to match the new backend architecture
+// These will replace the old session types
 
-export interface SessionCreateResponse {
-  session_id: string;
-  title: string;
-  description?: string;
-  host_user_id: string;
-  status: string;
-  max_participants: number;
-  created_at: string;
-  join_url: string;
-  participants: ParticipantResponse[];
-}
-
-export interface SessionDetailResponse {
-  session_id: string;
-  title: string;
-  description?: string;
-  host_user_id: string;
-  status: string;
-  max_participants: number;
-  created_at: string;
-  started_at?: string;
-  ended_at?: string;
-  participants: ParticipantResponse[];
-  participant_count: number;
-}
-
-export interface SessionJoinRequest {
-  user_id: string;
-  display_name: string;
-}
-
-export interface SessionJoinResponse {
-  session_id: string;
-  participant_id: string;
-  display_name: string;
-  websocket_url: string;
-  participants: ParticipantResponse[];
-}
-
-export interface ParticipantResponse {
-  id: string;
-  user_id: string;
-  display_name: string;
-  is_host: boolean;
-  status: string;
-  joined_at: string;
-}
-
-// WebSocket message types
+// WebSocket message types (keeping for WebRTC compatibility)
 export enum MessageType {
   WEBRTC_OFFER = "webrtc_offer",
-  WEBRTC_ANSWER = "webrtc_answer",
+  WEBRTC_ANSWER = "webrtc_answer", 
   ICE_CANDIDATE = "ice_candidate",
   RECORDING_STATUS = "recording_status",
   PARTICIPANT_JOINED = "participant_joined",
@@ -74,7 +21,7 @@ export interface WebSocketMessage {
   participant_id?: string;
 }
 
-// WebRTC types
+// WebRTC types (keeping for compatibility)
 export interface RTCOfferMessage {
   type: MessageType.WEBRTC_OFFER;
   offer: RTCSessionDescriptionInit;

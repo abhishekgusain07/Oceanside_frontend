@@ -58,7 +58,7 @@ export default function Home() {
       title: "Multi-Track Recording",
       description:
         "High-quality audio/video recording sessions with WebRTC peer-to-peer connections and real-time WebSocket signaling.",
-      link: "/createsession",
+      link: "/studio",
     },
     {
       title: "Authentication",
@@ -157,8 +157,8 @@ export default function Home() {
               </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link href="/createsession" className="bg-blue-600 text-white hover:bg-blue-700 px-8 py-3 rounded-md font-medium text-lg shadow-lg transition-all">
-                Create Recording Session
+                          <Link href="/studio" className="bg-blue-600 text-white hover:bg-blue-700 px-8 py-3 rounded-md font-medium text-lg shadow-lg transition-all">
+              Start Recording Studio
               </Link>
               <Link href="/session-manager" className="bg-gray-600 text-white hover:bg-gray-700 px-8 py-3 rounded-md font-medium text-lg transition-all">
                 Manage Sessions
