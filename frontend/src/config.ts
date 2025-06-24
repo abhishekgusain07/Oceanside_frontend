@@ -28,6 +28,7 @@ const config = {
         // Recording CRUD operations
         recordings: '/api/recordings',
         createRecording: '/api/recordings',
+        getRecording: (roomId: string) => `/api/recordings/${roomId}`,
         getUserRecordings: '/api/recordings',
         
         // Guest token operations

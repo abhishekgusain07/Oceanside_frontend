@@ -92,12 +92,12 @@ export default function GuestJoinPage({ params }: GuestJoinPageProps) {
     // Socket event handlers
     socket.on('connect', () => {
       console.log('Connected to Socket.IO server');
-      socket.emit('join-room', roomId);
+      socket.emit('join_room', roomId);
     });
 
     socket.on('room-joined', () => {
       console.log('Joined room as guest');
-      socket.emit('ready'); // Signal ready for WebRTC
+      socket.emit('ready', roomId); // Signal ready for WebRTC
     });
 
     socket.on('user-joined', () => {
@@ -140,7 +140,12 @@ export default function GuestJoinPage({ params }: GuestJoinPageProps) {
   const initializeWebRTC = () => {
     const configuration = {
       iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
+        { urls: 'stun:stun.l.google.com:19302' },
+        {
+          urls: 'turn:relay1.expressturn.com:3480',
+          username: '000000002066064322',
+          credential: 'WmntrHEmhe1gxXsKPOygktWz3+s='
+        }
       ]
     };
 
@@ -165,7 +170,7 @@ export default function GuestJoinPage({ params }: GuestJoinPageProps) {
     // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
       if (event.candidate && socketRef.current) {
-        socketRef.current.emit('ice-candidate', {
+        socketRef.current.emit('ice_candidate', {
           roomId: roomId,
           candidate: event.candidate
         });
@@ -235,9 +240,29 @@ export default function GuestJoinPage({ params }: GuestJoinPageProps) {
     if (localStreamRef.current) {
       recordingChunksRef.current = [];
       
-      const mediaRecorder = new MediaRecorder(localStreamRef.current, {
-        mimeType: 'video/webm;codecs=vp9,opus'
-      });
+      // Try different mimeTypes in order of preference
+      let options = {};
+      const mimeTypes = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus', 
+        'video/webm',
+        'video/mp4;codecs=h264,aac',
+        'video/mp4'
+      ];
+      
+      for (const mimeType of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          options = { mimeType };
+          console.log('Using mimeType:', mimeType);
+          break;
+        }
+      }
+      
+      if (!Object.keys(options).length) {
+        console.log('Using default MediaRecorder options (no mimeType specified)');
+      }
+      
+      const mediaRecorder = new MediaRecorder(localStreamRef.current, options);
       
       mediaRecorderRef.current = mediaRecorder;
       
@@ -269,7 +294,7 @@ export default function GuestJoinPage({ params }: GuestJoinPageProps) {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const formData = new FormData();
-        formData.append('chunk', chunk, `chunk_${i}.webm`);
+        formData.append('file', chunk, `chunk_${i}.webm`);
         formData.append('room_id', roomId);
         formData.append('user_type', 'guest');
         formData.append('chunk_index', i.toString());

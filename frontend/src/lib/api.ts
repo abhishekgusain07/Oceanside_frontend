@@ -96,6 +96,24 @@ export interface RecordingCreateResponse {
   created_at: string;
 }
 
+export interface RecordingResponse {
+  id: string;
+  room_id: string;
+  host_user_id: string;
+  title?: string;
+  description?: string;
+  status: string;
+  created_at: string;
+  started_at?: string;
+  ended_at?: string;
+  processed_at?: string;
+  video_url?: string;
+  thumbnail_url?: string;
+  duration_seconds?: number;
+  max_participants: number;
+  processing_attempts: number;
+}
+
 export interface GuestTokenResponse {
   token: string;
   expires_at: string;
@@ -119,6 +137,22 @@ export class RecordingAPI {
       return response.data;
     } catch (error) {
       console.error('Failed to create recording:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a specific recording by room ID
+   * @param roomId - The room ID of the recording
+   * @returns Promise<RecordingResponse> - Recording details
+   */
+  static async getRecording(roomId: string): Promise<RecordingResponse> {
+    try {
+      const endpoint = config.api.endpoints.getRecording(roomId);
+      const response = await api.get(endpoint);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to get recording:', error);
       throw error;
     }
   }
