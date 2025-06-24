@@ -29,8 +29,7 @@ export default function StudioRoomPage() {
     chunkInfo: '',
     status: 'Uploading to cloud…'
   });
-  const [countdown, setCountdown] = useState(0);
-  const [showCountdown, setShowCountdown] = useState(false);
+
   const [guestToken, setGuestToken] = useState<string>('');
   const [roomReady, setRoomReady] = useState(false);
   
@@ -49,6 +48,9 @@ export default function StudioRoomPage() {
   const currentChunkStartTimeRef = useRef(0);
   const chunkRecordingStartTimeRef = useRef<number | null>(null);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Use ref for recording state to survive Fast Refresh - this is the key fix!
+  const isRecordingRef = useRef(false);
 
   // Initialize room on component mount
   useEffect(() => {
@@ -91,7 +93,7 @@ export default function StudioRoomPage() {
     return () => clearTimeout(timeout);
   }, [localStreamRef.current, roomReady]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount - remove isRecording dependency to prevent re-renders
   useEffect(() => {
     return () => {
       console.log('Cleaning up room resources...');
@@ -101,8 +103,10 @@ export default function StudioRoomPage() {
         clearTimeout(recordingTimerRef.current);
       }
       
+
+      
       // Stop recording if active
-      if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
         mediaRecorderRef.current.stop();
       }
       
@@ -125,7 +129,7 @@ export default function StudioRoomPage() {
         console.log('Closed peer connection');
       }
     };
-  }, [isRecording]);
+  }, []); // Empty dependency array - only run on unmount
 
   const initializeRoom = async () => {
     try {
@@ -283,13 +287,13 @@ export default function StudioRoomPage() {
     });
 
     socket.on('start-recording', (data: { startTime: number }) => {
-      console.log('Start recording countdown:', data);
-      startRecordingCountdown(data.startTime);
+      console.log('Start recording signal received:', data);
+      startRecordingImmediately();
     });
 
     socket.on('stop-rec', () => {
-      console.log('Stop recording signal received');
-      stopRecording();
+      console.log('Stop recording signal received from backend');
+      stopRecordingLocal(); // Stop locally without emitting back to server
     });
 
     socket.on('participant_left', () => {
@@ -413,31 +417,15 @@ export default function StudioRoomPage() {
     }
   };
 
-  const startRecordingCountdown = (startTime: number) => {
-    setShowCountdown(true);
-    const now = Date.now();
-    const delay = startTime - now;
+  const startRecordingImmediately = () => {
+    console.log('🎬 Starting recording immediately (no countdown)...');
     
-    if (delay > 0) {
-      let timeLeft = Math.ceil(delay / 1000);
-      setCountdown(timeLeft);
-      
-      const countdownInterval = setInterval(() => {
-        timeLeft--;
-        setCountdown(timeLeft);
-        
-        if (timeLeft <= 0) {
-          clearInterval(countdownInterval);
-          setShowCountdown(false);
-          setIsRecording(true);
-          startLocalRecording();
-        }
-      }, 1000);
-    } else {
-      setShowCountdown(false);
-      setIsRecording(true);
-      startLocalRecording();
-    }
+    // Set both state (for UI) and ref (for logic that survives Fast Refresh)
+    setIsRecording(true);
+    isRecordingRef.current = true;
+    
+    // Start recording immediately
+    startLocalRecording();
   };
 
   const startLocalRecording = () => {
@@ -455,9 +443,19 @@ export default function StudioRoomPage() {
   };
 
   const startNewRecorder = () => {
-    // Don't start if recording has been stopped or no stream available
-    if (!isRecording || !localStreamRef.current) {
-      console.log('❌ Cannot start recorder - isRecording:', isRecording, 'hasStream:', !!localStreamRef.current);
+    console.log('🔄 startNewRecorder called - checking conditions...');
+    console.log('📊 Current state:', {
+      isRecording: isRecordingRef.current,
+      isRecordingState: isRecording,
+      hasStream: !!localStreamRef.current,
+      streamTracks: localStreamRef.current?.getTracks().length || 0,
+      chunkIndex: chunkIndexRef.current
+    });
+    
+    // Use ref for recording state to survive Fast Refresh
+    if (!isRecordingRef.current || !localStreamRef.current) {
+      console.error('❌ Cannot start recorder - isRecordingRef:', isRecordingRef.current, 'hasStream:', !!localStreamRef.current);
+      console.error('❌ This indicates recording was stopped or Fast Refresh interference');
       return;
     }
 
@@ -500,6 +498,14 @@ export default function StudioRoomPage() {
 
     // This fires when chunk data becomes available
     mediaRecorder.ondataavailable = (event) => {
+      console.log(`📥 MediaRecorder ondataavailable fired - event.data.size: ${event.data.size}`);
+      console.log(`🔍 Recording state check:`, {
+        hasRecordingStartTime: !!recordingStartTimeRef.current,
+        hasChunkRecordingStartTime: !!chunkRecordingStartTimeRef.current,
+        chunkDataSize: event.data.size,
+        currentChunkIndex: chunkIndexRef.current
+      });
+      
       if (event.data.size > 0 && recordingStartTimeRef.current && chunkRecordingStartTimeRef.current) {
         chunkIndexRef.current++;
 
@@ -520,67 +526,122 @@ export default function StudioRoomPage() {
         
         // IMMEDIATE UPLOAD - No waiting!
         uploadChunkImmediately(chunkBlob, startTime, endTime);
+      } else {
+        console.warn(`⚠️ Skipping chunk upload due to missing data:`, {
+          dataSize: event.data.size,
+          hasRecordingStartTime: !!recordingStartTimeRef.current,
+          hasChunkRecordingStartTime: !!chunkRecordingStartTimeRef.current
+        });
       }
     };
 
     // When this recorder stops, automatically start the next one
     mediaRecorder.onstop = () => {
-      if (isRecording) {
+      console.log(`🛑 MediaRecorder stopped - isRecordingRef: ${isRecordingRef.current}, chunks generated: ${chunkIndexRef.current}`);
+      if (isRecordingRef.current) {
         console.log('⏭️  Chunk finished, starting next recorder in 300ms...');
         setTimeout(() => {
           startNewRecorder(); // Recursive call creates continuous loop
         }, 300); // RESTART_DELAY_MS = 300
+      } else {
+        console.log('🚫 Not starting next recorder because isRecordingRef is false');
       }
+    };
+
+    // Add event listeners for debugging
+    mediaRecorder.onstart = () => {
+      console.log(`🟢 MediaRecorder started for chunk ${chunkIndexRef.current + 1}`);
+    };
+    
+    mediaRecorder.onerror = (event) => {
+      console.error(`❌ MediaRecorder error:`, event);
     };
 
     // Start recording THIS chunk
     mediaRecorder.start();
     chunkRecordingStartTimeRef.current = Date.now();
-    console.log('🔴 Chunk recorder started');
+    console.log(`🔴 Chunk recorder started - state: ${mediaRecorder.state}, time: ${chunkRecordingStartTimeRef.current}`);
 
     // Auto-stop this chunk after 5 seconds to trigger next chunk
     recordingTimerRef.current = setTimeout(() => {
-      if (mediaRecorder && mediaRecorder.state === "recording" && isRecording) {
-        console.log('⏰ 5 seconds up, stopping chunk recorder...');
+      if (mediaRecorder && mediaRecorder.state === "recording" && isRecordingRef.current) {
+        console.log(`⏰ 5 seconds up, stopping chunk recorder... (state: ${mediaRecorder.state})`);
         mediaRecorder.stop(); // This triggers ondataavailable
+      } else {
+        console.warn(`⚠️ Cannot stop recorder:`, {
+          hasRecorder: !!mediaRecorder,
+          recorderState: mediaRecorder?.state,
+          isRecordingRef: isRecordingRef.current
+        });
       }
     }, 5000); // CHUNK_DURATION_MS = 5000
   };
 
   const uploadChunkImmediately = async (chunkBlob: Blob, startTime: number, endTime: number) => {
-    console.log(`🚀 Uploading chunk ${chunkIndexRef.current} immediately...`);
+    const chunkNumber = chunkIndexRef.current;
+    console.log(`🚀 Uploading chunk ${chunkNumber} immediately...`);
+    console.log(`📊 Chunk details: size=${chunkBlob.size} bytes, duration=${endTime - startTime}ms`);
     
     // Show upload status to user (update the existing upload progress)
     setUploadProgress({
       percentage: 0,
-      chunkInfo: `Uploading chunk ${chunkIndexRef.current}...`,
+      chunkInfo: `Uploading chunk ${chunkNumber}...`,
       status: 'Uploading to cloud…'
     });
 
     // Prepare form data for upload
     const formData = new FormData();
-    formData.append("file", chunkBlob, `chunk-${chunkIndexRef.current}.webm`);
+    formData.append("file", chunkBlob, `chunk-${chunkNumber}.webm`);
     formData.append("room_id", roomId);
     formData.append("user_type", "host");
     formData.append("start_time", (startTime / 1000).toString()); // Convert to seconds
     formData.append("end_time", (endTime / 1000).toString());     // Convert to seconds
-    formData.append("chunk_index", chunkIndexRef.current.toString());
+    formData.append("chunk_index", chunkNumber.toString());
+
+    console.log(`📤 Form data prepared for chunk ${chunkNumber}:`, {
+      filename: `chunk-${chunkNumber}.webm`,
+      size: chunkBlob.size,
+      room_id: roomId,
+      user_type: "host",
+      start_time: (startTime / 1000).toString(),
+      end_time: (endTime / 1000).toString(),
+      chunk_index: chunkNumber.toString()
+    });
 
     try {
       // Upload immediately - no batching or waiting
-      await RecordingAPI.uploadChunk(formData);
-      console.log(`✅ Chunk ${chunkIndexRef.current} uploaded successfully`);
+      console.log(`📡 Starting upload for chunk ${chunkNumber}...`);
+      const uploadResult = await RecordingAPI.uploadChunk(formData);
+      console.log(`✅ Chunk ${chunkNumber} uploaded successfully:`, uploadResult);
+      
+      // Clear upload progress after successful upload
+      setTimeout(() => {
+        setUploadProgress({
+          percentage: 0,
+          chunkInfo: '',
+          status: ''
+        });
+      }, 1000);
+      
     } catch (err) {
-      console.error("Upload failed", err);
-      toast.error(`Failed to upload chunk ${chunkIndexRef.current}`);
+      console.error(`❌ Upload failed for chunk ${chunkNumber}:`, err);
+      toast.error(`Failed to upload chunk ${chunkNumber}`);
+      
+      // Clear upload progress on error too
+      setUploadProgress({
+        percentage: 0,
+        chunkInfo: '',
+        status: ''
+      });
     }
   };
 
-  const stopRecording = () => {
-    console.log('🛑 stopRecording called, isRecording:', isRecording, 'mediaRecorder exists:', !!mediaRecorderRef.current);
+  const stopRecordingLocal = () => {
+    console.log('🛑 stopRecordingLocal called (no socket emit), isRecording:', isRecording, 'mediaRecorder exists:', !!mediaRecorderRef.current);
     
-    // Set recording state to false to stop the recursive chunk creation
+    // Set both state and ref to false to stop the recursive chunk creation
     setIsRecording(false);
+    isRecordingRef.current = false;
     
     // Clear any pending timer
     if (recordingTimerRef.current) {
@@ -592,15 +653,6 @@ export default function StudioRoomPage() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       console.log('🛑 Stopping current chunk recorder...');
       mediaRecorderRef.current.stop();
-    }
-    
-    // Emit socket event
-    if (socketRef.current) {
-      console.log('📡 Emitting recording_stopped event...');
-      socketRef.current.emit('recording_stopped', {
-        roomId: roomId,
-        userId: user?.id
-      });
     }
 
     console.log(`🏁 Recording session complete. Total chunks: ${chunkIndexRef.current}`);
@@ -630,6 +682,22 @@ export default function StudioRoomPage() {
         });
       }, 3000);
     }, 1000);
+  };
+
+  const stopRecording = () => {
+    console.log('🛑 stopRecording called (user action), isRecording:', isRecording, 'mediaRecorder exists:', !!mediaRecorderRef.current);
+    
+    // Stop recording locally first
+    stopRecordingLocal();
+    
+    // Emit socket event to notify other participants
+    if (socketRef.current) {
+      console.log('📡 Emitting recording_stopped event...');
+      socketRef.current.emit('recording_stopped', {
+        roomId: roomId,
+        userId: user?.id
+      });
+    }
   };
 
 
@@ -669,7 +737,7 @@ export default function StudioRoomPage() {
     console.log('🚪 Leaving room...');
     
     // Stop recording if active
-    if (isRecording) {
+    if (isRecording || isRecordingRef.current) {
       stopRecording();
     }
     
@@ -765,8 +833,8 @@ export default function StudioRoomPage() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Upload Progress - Now shows during recording when chunks upload */}
-          {(isUploading || (isRecording && uploadProgress.chunkInfo)) && (
+          {/* Upload Progress - Shows when uploading chunks or general uploading */}
+          {(isUploading || uploadProgress.chunkInfo) && (
             <div className="flex items-center gap-3 bg-gray-800 px-4 py-2 rounded-lg">
               <div className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
               <div className="text-sm">
@@ -944,20 +1012,7 @@ export default function StudioRoomPage() {
         </div>
       </footer>
 
-      {/* Countdown Overlay */}
-      {showCountdown && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-          <div className="text-center">
-            <div className="text-white text-xl mb-4">Recording will start in</div>
-            <div className="text-white text-8xl font-bold mb-4">{countdown}</div>
-            {countdown === 0 && (
-              <div className="text-white text-xl flex items-center gap-2">
-                Recording <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+
     </div>
   );
 } 

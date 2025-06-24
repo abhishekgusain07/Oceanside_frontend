@@ -229,11 +229,16 @@ export class RecordingAPI {
    */
   static async updateTitle(roomId: string, title: string) {
     try {
-      const data: UpdateTitleRequest = {
-        room_id: roomId,
-        title: title,
-      };
-      const response = await api.post(config.api.endpoints.updateTitle, data);
+      // Backend expects form data, not JSON
+      const formData = new FormData();
+      formData.append('room_id', roomId);
+      formData.append('title', title);
+      
+      const response = await api.post(config.api.endpoints.updateTitle, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
       return response.data;
     } catch (error) {
       console.error('Failed to update title:', error);
