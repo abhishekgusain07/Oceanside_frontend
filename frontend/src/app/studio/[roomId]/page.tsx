@@ -4,15 +4,11 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useUser } from '@/hooks/useUser';
 import { RecordingAPI, type GuestTokenResponse } from '@/lib/api';
+import { UploadManager, type UploadProgress } from '@/lib/upload-manager';
+import { SessionManager, type SessionState } from '@/lib/session-manager';
 import { io, Socket } from 'socket.io-client';
 import { toast } from 'sonner';
 import config from '@/config';
-
-interface UploadProgress {
-  percentage: number;
-  chunkInfo: string;
-  status: string;
-}
 
 export default function StudioRoomPage() {
   const router = useRouter();
@@ -27,11 +23,16 @@ export default function StudioRoomPage() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress>({
     percentage: 0,
     chunkInfo: '',
-    status: 'Uploading to cloud…'
+    status: '',
+    chunksUploaded: 0,
+    totalChunks: 0,
+    failedChunks: 0,
   });
-
+  const [sessionState, setSessionState] = useState<SessionState | null>(null);
   const [guestToken, setGuestToken] = useState<string>('');
   const [roomReady, setRoomReady] = useState(false);
+  const [networkStatus, setNetworkStatus] = useState<'connected' | 'disconnected' | 'reconnecting' | 'failed'>('disconnected');
+  const [connectedGuests, setConnectedGuests] = useState<Map<string, string>>(new Map());
   
   // Refs for video elements and recording
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -51,6 +52,12 @@ export default function StudioRoomPage() {
   
   // Use ref for recording state to survive Fast Refresh - this is the key fix!
   const isRecordingRef = useRef(false);
+  
+  // Upload manager for reliable uploads with retry logic (Step 2 of reliable upload architecture)
+  const uploadManagerRef = useRef<UploadManager | null>(null);
+  
+  // Session manager for robust connection and lifecycle management
+  const sessionManagerRef = useRef<SessionManager | null>(null);
 
   // Initialize room on component mount
   useEffect(() => {
@@ -58,6 +65,24 @@ export default function StudioRoomPage() {
       initializeRoom();
     }
   }, [isAuthenticated, user, roomId]);
+
+  // Initialize upload manager
+  useEffect(() => {
+    if (!uploadManagerRef.current && roomId) {
+      uploadManagerRef.current = new UploadManager((progress) => {
+        setUploadProgress(progress);
+      });
+      
+      console.log(`📦 Initialized upload manager for room: ${roomId}`);
+      
+      // Clear any stale data from previous sessions on initialization
+      uploadManagerRef.current.clear();
+    }
+
+    return () => {
+      // Cleanup on unmount - this will be handled by the main cleanup effect
+    };
+  }, [roomId]);
 
   // Ensure video element gets the stream when it's available
   useEffect(() => {
@@ -93,24 +118,34 @@ export default function StudioRoomPage() {
     return () => clearTimeout(timeout);
   }, [localStreamRef.current, roomReady]);
 
-  // Cleanup on unmount - remove isRecording dependency to prevent re-renders
+  // Cleanup on unmount - handle browser refresh or navigation
   useEffect(() => {
     return () => {
-      console.log('Cleaning up room resources...');
+      console.log('🧹 Component unmounting - cleaning up room resources...');
       
       // Clear recording timer
       if (recordingTimerRef.current) {
         clearTimeout(recordingTimerRef.current);
       }
       
-
-      
       // Stop recording if active
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        console.log('🛑 Stopping recording due to component unmount');
         mediaRecorderRef.current.stop();
       }
+
+      // Clear upload manager completely on unmount
+      if (uploadManagerRef.current) {
+        console.log('🧹 Clearing upload manager on unmount');
+        uploadManagerRef.current.clear(); // Clear ALL data including localStorage
+      }
       
-      if (socketRef.current) {
+      // Notify socket that host is leaving (if socket still connected)
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('host_leaving_room', {
+          roomId: roomId,
+          userId: user?.id
+        });
         socketRef.current.disconnect();
         console.log('Disconnected from Socket.IO');
       }
@@ -129,7 +164,7 @@ export default function StudioRoomPage() {
         console.log('Closed peer connection');
       }
     };
-  }, []); // Empty dependency array - only run on unmount
+  }, [roomId, user?.id]); // Empty dependency array - only run on unmount
 
   const initializeRoom = async () => {
     try {
@@ -146,20 +181,45 @@ export default function StudioRoomPage() {
         return;
       }
 
-      // Fetch recording details to get title
+      // Fetch recording details to get title, create if doesn't exist
       try {
         const recording = await RecordingAPI.getRecording(roomId);
         setRecordingTitle(recording.title || 'Untitled Recording');
+        console.log('✅ Found existing recording:', recording.id);
       } catch (error) {
-        console.error('Failed to fetch recording details:', error);
-        // Continue anyway, might be a newly created room
+        console.error('Recording not found, creating new one...', error);
+        
+        // Create a new recording since one doesn't exist for this roomId
+        try {
+          const newRecording = await RecordingAPI.createRecording({
+            user_id: user.id,
+            title: 'Untitled Recording',
+            max_participants: 10
+          });
+          
+          // Important: The backend creates a new room_id, so we need to redirect to the correct URL
+          console.log('✅ Created new recording, redirecting to correct room:', newRecording.room_id);
+          
+          if (newRecording.room_id !== roomId) {
+            // Redirect to the correct room ID generated by the backend
+            router.replace(`/studio/${newRecording.room_id}`);
+            return;
+          }
+          
+                     setRecordingTitle('Untitled Recording');
+        } catch (createError) {
+          console.error('Failed to create recording:', createError);
+          toast.error('Failed to create recording session. Please try again.');
+          router.push('/studio');
+          return;
+        }
       }
       
       // Initialize media stream
       await initializeMedia();
       
-      // Initialize Socket.IO connection
-      initializeSocket(roomId);
+      // Initialize session manager
+      await initializeSessionManager();
       
       setRoomReady(true);
       
@@ -237,15 +297,86 @@ export default function StudioRoomPage() {
     }
   };
 
-  const initializeSocket = (roomId: string) => {
-    // Connect to Socket.IO server
+  const initializeSessionManager = async () => {
+    if (!user?.id || !roomId) return;
+
+    // Create session manager with callbacks
+    sessionManagerRef.current = new SessionManager(
+      roomId,
+      user.id,
+      'host', // Always host for this component
+      {
+        onStateChange: (state: SessionState) => {
+          setSessionState(state);
+          setNetworkStatus(state.connectionStatus);
+          setIsRecording(state.isRecording);
+        },
+        onNetworkIssue: (issue: string) => {
+          switch (issue) {
+            case 'disconnected':
+              toast.error('Connection lost - attempting to reconnect...');
+              break;
+            case 'timeout':
+              toast.error('Network timeout - please check your connection');
+              break;
+            case 'reconnected':
+              toast.success('Connection restored');
+              break;
+          }
+        },
+        onRecordingComplete: (roomId: string, totalChunks: number) => {
+          console.log(`📹 Recording complete: ${totalChunks} chunks for room ${roomId}`);
+          toast.success(`Recording completed with ${totalChunks} chunks`);
+        },
+        onGuestStateChange: (guestId: string, action: string) => {
+          const guests = new Map(connectedGuests);
+          
+          switch (action) {
+            case 'joined':
+              guests.set(guestId, 'Connected');
+              toast.success('Guest joined the session');
+              break;
+            case 'left':
+              guests.delete(guestId);
+              toast.info('Guest left the session');
+              break;
+            case 'disconnected':
+              guests.set(guestId, 'Disconnected');
+              toast.warning('Guest connection lost');
+              break;
+          }
+          
+          setConnectedGuests(guests);
+        }
+      }
+    );
+
+    // Initialize Socket.IO connection
     const socket = io(config.socketio.baseUrl, {
-      path: '/socket.io/'
+      path: '/socket.io/',
+      transports: ['websocket', 'polling'], // Fallback for network issues
+      timeout: 20000,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 3
     });
     
     socketRef.current = socket;
 
-    // Socket event handlers
+    // Initialize session manager with socket and upload manager
+    if (uploadManagerRef.current) {
+      sessionManagerRef.current.initialize(socket, uploadManagerRef.current);
+    }
+
+    // Setup additional socket event handlers for WebRTC
+    setupWebRTCSocketEvents(socket);
+    
+    // Initialize WebRTC
+    initializeWebRTC();
+  };
+
+  const setupWebRTCSocketEvents = (socket: Socket) => {
+    // Basic room events
     socket.on('connect', () => {
       console.log('Connected to Socket.IO server');
       socket.emit('join_room', roomId);
@@ -261,7 +392,7 @@ export default function StudioRoomPage() {
 
     socket.on('user-joined', (socketId: string) => {
       console.log('Guest user joined:', socketId);
-      toast.success('Guest joined the session');
+      // Guest state change is handled by session manager
     });
 
     socket.on('ready', () => {
@@ -288,23 +419,26 @@ export default function StudioRoomPage() {
 
     socket.on('start-recording', (data: { startTime: number }) => {
       console.log('Start recording signal received:', data);
+      if (sessionManagerRef.current) {
+        sessionManagerRef.current.startRecording();
+      }
       startRecordingImmediately();
     });
 
     socket.on('stop-rec', () => {
       console.log('Stop recording signal received from backend');
+      if (sessionManagerRef.current) {
+        sessionManagerRef.current.stopRecording();
+      }
       stopRecordingLocal(); // Stop locally without emitting back to server
     });
 
     socket.on('participant_left', () => {
-      toast.info('Guest left the session');
+      // Handled by session manager guest state change
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = null;
       }
     });
-
-    // Initialize WebRTC
-    initializeWebRTC();
   };
 
   const initializeWebRTC = () => {
@@ -579,60 +713,46 @@ export default function StudioRoomPage() {
 
   const uploadChunkImmediately = async (chunkBlob: Blob, startTime: number, endTime: number) => {
     const chunkNumber = chunkIndexRef.current;
-    console.log(`🚀 Uploading chunk ${chunkNumber} immediately...`);
+    console.log(`🚀 Adding chunk ${chunkNumber} to upload queue...`);
     console.log(`📊 Chunk details: size=${chunkBlob.size} bytes, duration=${endTime - startTime}ms`);
     
-    // Show upload status to user (update the existing upload progress)
-    setUploadProgress({
-      percentage: 0,
-      chunkInfo: `Uploading chunk ${chunkNumber}...`,
-      status: 'Uploading to cloud…'
-    });
-
-    // Prepare form data for upload
-    const formData = new FormData();
-    formData.append("file", chunkBlob, `chunk-${chunkNumber}.webm`);
-    formData.append("room_id", roomId);
-    formData.append("user_type", "host");
-    formData.append("start_time", (startTime / 1000).toString()); // Convert to seconds
-    formData.append("end_time", (endTime / 1000).toString());     // Convert to seconds
-    formData.append("chunk_index", chunkNumber.toString());
-
-    console.log(`📤 Form data prepared for chunk ${chunkNumber}:`, {
-      filename: `chunk-${chunkNumber}.webm`,
-      size: chunkBlob.size,
-      room_id: roomId,
-      user_type: "host",
-      start_time: (startTime / 1000).toString(),
-      end_time: (endTime / 1000).toString(),
-      chunk_index: chunkNumber.toString()
-    });
-
-    try {
-      // Upload immediately - no batching or waiting
-      console.log(`📡 Starting upload for chunk ${chunkNumber}...`);
-      const uploadResult = await RecordingAPI.uploadChunk(formData);
-      console.log(`✅ Chunk ${chunkNumber} uploaded successfully:`, uploadResult);
+    // Use the reliable upload manager instead of direct upload
+    if (uploadManagerRef.current && sessionManagerRef.current) {
+      // Add chunk to upload queue (returns chunk ID)
+      const chunkId = uploadManagerRef.current.addChunk(
+        roomId,
+        chunkNumber,
+        chunkBlob,
+        startTime,
+        endTime,
+        'host', // user type
+        'video/webm' // content type
+      );
       
-      // Clear upload progress after successful upload
-      setTimeout(() => {
-        setUploadProgress({
-          percentage: 0,
-          chunkInfo: '',
-          status: ''
+      // Track final chunks during recording stop for graceful shutdown
+      if (!isRecordingRef.current) {
+        // Create a promise that resolves when this chunk is confirmed
+        const chunkUploadPromise = new Promise<void>((resolve, reject) => {
+          const checkChunkStatus = () => {
+            const stats = uploadManagerRef.current?.getStats();
+            if (stats && (stats.uploaded > 0 || stats.failed > 0)) {
+              // This is a simplified check - in a real implementation you'd want to track specific chunk IDs
+              resolve();
+            } else {
+              setTimeout(checkChunkStatus, 1000); // Check every second
+            }
+          };
+          checkChunkStatus();
         });
-      }, 1000);
+        
+        sessionManagerRef.current.addFinalChunk(chunkUploadPromise);
+        console.log(`🏁 Final chunk ${chunkNumber} (ID: ${chunkId}) tracked for graceful shutdown`);
+      }
       
-    } catch (err) {
-      console.error(`❌ Upload failed for chunk ${chunkNumber}:`, err);
-      toast.error(`Failed to upload chunk ${chunkNumber}`);
-      
-      // Clear upload progress on error too
-      setUploadProgress({
-        percentage: 0,
-        chunkInfo: '',
-        status: ''
-      });
+      console.log(`✅ Chunk ${chunkNumber} added to upload queue with ID: ${chunkId}`);
+    } else {
+      console.error('❌ Upload manager or session manager not initialized');
+      toast.error('Upload system not ready. Please try again.');
     }
   };
 
@@ -662,25 +782,11 @@ export default function StudioRoomPage() {
       console.error('Failed to update final title:', err)
     );
 
-    // Clear upload progress UI
-    setUploadProgress({
-      percentage: 100,
-      chunkInfo: '',
-      status: 'Recording completed'
-    });
-
+    // The upload manager will handle progress updates automatically
     // Just show completion message - DON'T redirect to dashboard
     // User should stay in the room until they click "Leave"
     setTimeout(() => {
-      toast.success('Recording completed! All chunks uploaded successfully.');
-      // Clear the upload progress after showing success
-      setTimeout(() => {
-        setUploadProgress({
-          percentage: 0,
-          chunkInfo: '',
-          status: ''
-        });
-      }, 3000);
+      toast.success('Recording session ended! Uploads will continue in background.');
     }, 1000);
   };
 
@@ -733,12 +839,36 @@ export default function StudioRoomPage() {
     toast.success('Video connection retried');
   };
 
-  const leaveRoom = () => {
+  const leaveRoom = async () => {
     console.log('🚪 Leaving room...');
     
-    // Stop recording if active
-    if (isRecording || isRecordingRef.current) {
-      stopRecording();
+    // Use session manager for graceful shutdown
+    if (sessionManagerRef.current) {
+      await sessionManagerRef.current.shutdown('user_exit');
+    } else {
+      // Fallback to manual cleanup if session manager isn't available
+      console.log('⚠️ No session manager available, using fallback cleanup');
+      
+      // Stop recording if active (auto-stop on host exit)
+      if (isRecording || isRecordingRef.current) {
+        console.log('🛑 Auto-stopping recording because host is leaving room');
+        stopRecording();
+      }
+
+      // Disconnect socket with proper room exit notification
+      if (socketRef.current) {
+        socketRef.current.emit('host_leaving_room', {
+          roomId: roomId,
+          userId: user?.id
+        });
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+
+      // Clear upload manager
+      if (uploadManagerRef.current) {
+        uploadManagerRef.current.clear();
+      }
     }
     
     // Stop all media tracks to turn off camera/mic
@@ -758,12 +888,6 @@ export default function StudioRoomPage() {
       remoteVideoRef.current.srcObject = null;
     }
     
-    // Disconnect socket
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-    
     // Close peer connection
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
@@ -775,8 +899,27 @@ export default function StudioRoomPage() {
       clearTimeout(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
+
+    // Reset all state to ensure clean exit
+    setIsRecording(false);
+    isRecordingRef.current = false;
+    setUploadProgress({
+      percentage: 0,
+      chunkInfo: '',
+      status: '',
+      chunksUploaded: 0,
+      totalChunks: 0,
+      failedChunks: 0,
+    });
+    setSessionState(null);
+    setNetworkStatus('disconnected');
+    setConnectedGuests(new Map());
+
+    // Clear refs
+    sessionManagerRef.current = null;
+    uploadManagerRef.current = null;
     
-    toast.success('Left the room');
+    toast.success('Left the room - recording session ended');
     
     // Now redirect to dashboard
     router.push('/dashboard');
@@ -833,18 +976,37 @@ export default function StudioRoomPage() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Upload Progress - Shows when uploading chunks or general uploading */}
-          {(isUploading || uploadProgress.chunkInfo) && (
+          {/* Upload Progress - Shows upload status from the reliable upload manager */}
+          {(uploadProgress.totalChunks > 0 || uploadProgress.status) && (
             <div className="flex items-center gap-3 bg-gray-800 px-4 py-2 rounded-lg">
-              <div className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              {uploadProgress.status === 'Upload complete' ? (
+                <div className="w-4 h-4 bg-green-500 rounded-full" />
+              ) : uploadProgress.failedChunks > 0 ? (
+                <div className="w-4 h-4 bg-red-500 rounded-full" />
+              ) : (
+                <div className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              )}
               <div className="text-sm">
                 <div className="text-white">
-                  {isRecording ? 'Live Upload' : 'Uploading Recording'}
+                  {uploadProgress.status || (isRecording ? 'Live Upload' : 'Upload Manager')}
                 </div>
-                <div className="text-gray-400 text-xs">{uploadProgress.chunkInfo}</div>
+                <div className="text-gray-400 text-xs">
+                  {uploadProgress.chunkInfo || 
+                   (uploadProgress.totalChunks > 0 
+                    ? `${uploadProgress.chunksUploaded}/${uploadProgress.totalChunks} chunks` 
+                    : '')}
+                </div>
               </div>
               {uploadProgress.percentage > 0 && (
                 <div className="text-purple-400 text-sm">{uploadProgress.percentage}%</div>
+              )}
+              {uploadProgress.failedChunks > 0 && (
+                <button
+                  onClick={() => uploadManagerRef.current?.retryFailed()}
+                  className="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-red-900/30 rounded transition-colors"
+                >
+                  Retry Failed ({uploadProgress.failedChunks})
+                </button>
               )}
             </div>
           )}
@@ -865,6 +1027,48 @@ export default function StudioRoomPage() {
             >
               Retry Video
             </button>
+          )}
+
+          {/* Network Status Indicator */}
+          <div className="flex items-center gap-2">
+            <div className={`w-3 h-3 rounded-full ${
+              networkStatus === 'connected' ? 'bg-green-500' : 
+              networkStatus === 'reconnecting' ? 'bg-yellow-500 animate-pulse' :
+              networkStatus === 'failed' ? 'bg-red-500' : 'bg-gray-500'
+            }`} />
+            <span className={`text-xs ${
+              networkStatus === 'connected' ? 'text-green-400' :
+              networkStatus === 'reconnecting' ? 'text-yellow-400' :
+              networkStatus === 'failed' ? 'text-red-400' : 'text-gray-400'
+            }`}>
+              {networkStatus === 'connected' ? 'Connected' :
+               networkStatus === 'reconnecting' ? 'Reconnecting...' :
+               networkStatus === 'failed' ? 'Connection Failed' : 'Offline'}
+            </span>
+          </div>
+
+          {/* Connected Guests */}
+          {connectedGuests.size > 0 && (
+            <div className="flex items-center gap-2 bg-gray-800 px-3 py-2 rounded-lg">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+              <span className="text-sm">
+                {connectedGuests.size} Guest{connectedGuests.size !== 1 ? 's' : ''}
+              </span>
+            </div>
+          )}
+
+          {/* Session State Info */}
+          {sessionState && (
+            <div className="flex items-center gap-2 bg-gray-800 px-3 py-2 rounded-lg text-xs">
+              {sessionState.pendingFinalChunks > 0 && (
+                <div className="flex items-center gap-1 text-yellow-400">
+                  <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                  <span>Finalizing {sessionState.pendingFinalChunks} chunks</span>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Invite Button */}

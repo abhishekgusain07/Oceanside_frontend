@@ -39,6 +39,10 @@ const config = {
         uploadUrl: '/api/recordings/upload-url',
         uploadChunk: '/api/recordings/upload-chunk',
         
+        // Pre-signed URL upload operations 
+        generateUploadUrl: '/api/recordings/generate-upload-url',
+        confirmUpload: '/api/recordings/confirm-upload',
+        
         // Recording management
         updateTitle: '/api/recordings/update-title',
         turnCredentials: '/api/recordings/turn-credentials',

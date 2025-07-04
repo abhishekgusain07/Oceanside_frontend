@@ -121,6 +121,34 @@ export interface GuestTokenResponse {
   uses_remaining: number;
 }
 
+// Pre-signed URL upload types (Step 2 of reliable upload architecture)
+export interface GenerateUploadUrlRequest {
+  recording_id: string;
+  chunk_index: number;
+  content_type: string;
+  user_type: 'host' | 'guest';
+}
+
+export interface GenerateUploadUrlResponse {
+  pre_signed_url: string;
+  file_path: string;
+  expires_in: number;
+  expires_at: string;
+}
+
+export interface ConfirmUploadRequest {
+  recording_id: string;
+  chunk_index: number;
+  file_path: string;
+  etag: string;
+  user_type: 'host' | 'guest';
+}
+
+export interface ConfirmUploadResponse {
+  success: boolean;
+  message: string;
+}
+
 /**
  * Recording API for the new architecture - uses configured endpoints
  * All endpoints are centrally managed in config.ts to ensure /api prefix is always used
@@ -288,6 +316,71 @@ export class RecordingAPI {
       return response.data;
     } catch (error) {
       console.error('Health check failed:', error);
+      throw error;
+    }
+  }
+
+  // Pre-signed URL upload methods (Step 2 of reliable upload architecture)
+  /**
+   * Generate a pre-signed URL for direct upload to cloud storage
+   * @param data - Upload URL generation request data
+   * @returns Promise<GenerateUploadUrlResponse> - Pre-signed URL and metadata
+   */
+  static async generateUploadUrl(data: GenerateUploadUrlRequest): Promise<GenerateUploadUrlResponse> {
+    try {
+      const response = await api.post(config.api.endpoints.generateUploadUrl, data);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to generate upload URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Confirm that a chunk has been successfully uploaded to cloud storage
+   * @param data - Upload confirmation data including file path and ETag
+   * @returns Promise<ConfirmUploadResponse> - Confirmation response
+   */
+  static async confirmUpload(data: ConfirmUploadRequest): Promise<ConfirmUploadResponse> {
+    try {
+      const response = await api.post(config.api.endpoints.confirmUpload, data);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to confirm upload:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload a chunk directly to cloud storage using pre-signed URL
+   * @param preSignedUrl - The pre-signed URL from generateUploadUrl
+   * @param chunkBlob - The chunk data to upload
+   * @param contentType - The content type of the chunk
+   * @returns Promise<string> - The ETag from the successful upload
+   */
+  static async uploadChunkToCloud(preSignedUrl: string, chunkBlob: Blob, contentType: string): Promise<string> {
+    try {
+      const response = await fetch(preSignedUrl, {
+        method: 'PUT',
+        body: chunkBlob,
+        headers: {
+          'Content-Type': contentType,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed with status ${response.status}: ${response.statusText}`);
+      }
+
+      // Extract ETag from response headers (for R2/S3 verification)
+      const etag = response.headers.get('ETag') || response.headers.get('etag') || '';
+      if (!etag) {
+        console.warn('No ETag received from upload response');
+      }
+
+      return etag.replace(/"/g, ''); // Remove quotes from ETag
+    } catch (error) {
+      console.error('Failed to upload chunk to cloud:', error);
       throw error;
     }
   }
