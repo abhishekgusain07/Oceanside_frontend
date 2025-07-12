@@ -352,16 +352,53 @@ export default function StudioRoomPage() {
     );
 
     // Initialize Socket.IO connection
+    console.log('🔌 Initializing Socket.IO connection to:', config.socketio.baseUrl);
+    console.log('🔧 Socket.IO config:', {
+      baseUrl: config.socketio.baseUrl,
+      path: '/socket.io/',
+      transports: ['websocket', 'polling']
+    });
+    
     const socket = io(config.socketio.baseUrl, {
       path: '/socket.io/',
       transports: ['websocket', 'polling'], // Fallback for network issues
       timeout: 20000,
       reconnection: true,
       reconnectionDelay: 1000,
-      reconnectionAttempts: 3
+      reconnectionAttempts: 5,
+      forceNew: true, // Force a new connection
+      autoConnect: true
     });
     
     socketRef.current = socket;
+    
+    // Add connection debugging
+    socket.on('connect', () => {
+      console.log('✅ Socket.IO connected with ID:', socket.id);
+      console.log('🔗 Socket connected status:', socket.connected);
+    });
+    
+    socket.on('connect_error', (error) => {
+      console.error('❌ Socket.IO connection error:', error);
+      toast.error('Failed to connect to server. Please check your internet connection.');
+    });
+    
+    socket.on('disconnect', (reason) => {
+      console.warn('💔 Socket.IO disconnected:', reason);
+      if (reason === 'io server disconnect') {
+        // The disconnection was initiated by the server, you need to reconnect manually
+        socket.connect();
+      }
+    });
+    
+    socket.on('reconnect', (attemptNumber) => {
+      console.log('🔄 Socket.IO reconnected after', attemptNumber, 'attempts');
+      toast.success('Reconnected to server');
+    });
+    
+    socket.on('reconnect_error', (error) => {
+      console.error('❌ Socket.IO reconnection error:', error);
+    });
 
     // Initialize session manager with socket and upload manager
     if (uploadManagerRef.current) {
@@ -418,11 +455,23 @@ export default function StudioRoomPage() {
     });
 
     socket.on('start-recording', (data: { startTime: number }) => {
-      console.log('Start recording signal received:', data);
-      if (sessionManagerRef.current) {
-        sessionManagerRef.current.startRecording();
+      console.log('📡 Start recording signal received from server:', data);
+      console.log('🎬 Initiating local recording start...');
+      
+      try {
+        if (sessionManagerRef.current) {
+          console.log('📋 Updating session manager recording state...');
+          sessionManagerRef.current.startRecording();
+        } else {
+          console.warn('⚠️ Session manager not available during recording start');
+        }
+        
+        console.log('🎥 Starting immediate recording...');
+        startRecordingImmediately();
+      } catch (error) {
+        console.error('❌ Error handling start-recording event:', error);
+        toast.error('Failed to start recording. Please try again.');
       }
-      startRecordingImmediately();
     });
 
     socket.on('stop-rec', () => {
@@ -542,13 +591,60 @@ export default function StudioRoomPage() {
   };
 
   const startRecording = () => {
-    console.log('startRecording called, socketRef exists:', !!socketRef.current);
-    if (socketRef.current) {
-      console.log('Emitting start_recording_request for room:', roomId);
-      socketRef.current.emit('start_recording_request', roomId);
-    } else {
-      console.error('No socket connection available for starting recording');
+    console.log('🎬 startRecording called');
+    console.log('📊 Recording state check:', {
+      socketExists: !!socketRef.current,
+      socketConnected: socketRef.current?.connected,
+      sessionManagerExists: !!sessionManagerRef.current,
+      uploadManagerExists: !!uploadManagerRef.current,
+      roomReady,
+      networkStatus,
+      localStreamExists: !!localStreamRef.current,
+      isRecording
+    });
+
+    // Check all prerequisites
+    if (!socketRef.current) {
+      console.error('❌ No socket connection available');
+      toast.error('Not connected to server. Please wait for connection.');
+      return;
     }
+
+    if (!socketRef.current.connected) {
+      console.error('❌ Socket not connected');
+      toast.error('Connection lost. Please wait for reconnection.');
+      return;
+    }
+
+    if (!sessionManagerRef.current) {
+      console.error('❌ Session manager not initialized');
+      toast.error('Session not ready. Please try again.');
+      return;
+    }
+
+    if (!uploadManagerRef.current) {
+      console.error('❌ Upload manager not initialized');
+      toast.error('Upload system not ready. Please try again.');
+      return;
+    }
+
+    if (!localStreamRef.current) {
+      console.error('❌ No media stream available');
+      toast.error('Camera/microphone not available. Please check permissions.');
+      return;
+    }
+
+    console.log('✅ All prerequisites met, emitting start_recording_request for room:', roomId);
+    socketRef.current.emit('start_recording_request', roomId);
+    
+    // Add a timeout fallback in case the server doesn't respond
+    setTimeout(() => {
+      if (!isRecording && !isRecordingRef.current) {
+        console.warn('⚠️ No response from server after 3 seconds, starting recording directly');
+        toast.warning('Server response delayed, starting recording locally...');
+        startRecordingImmediately();
+      }
+    }, 3000);
   };
 
   const startRecordingImmediately = () => {
@@ -1071,6 +1167,19 @@ export default function StudioRoomPage() {
             </div>
           )}
 
+          {/* Debug Status Panel - Remove in production */}
+          <div className="flex items-center gap-2 bg-black/80 px-3 py-2 rounded-lg text-xs">
+            <div className="text-green-400 font-bold">Debug:</div>
+            <div>Room: {roomReady ? '✅' : '❌'}</div>
+            <div>Socket: {socketRef.current?.connected ? '✅' : '❌'}</div>
+            <div>Session: {sessionManagerRef.current ? '✅' : '❌'}</div>
+            <div>Upload: {uploadManagerRef.current ? '✅' : '❌'}</div>
+            <div>Stream: {localStreamRef.current ? '✅' : '❌'}</div>
+            <div className={isRecording ? 'text-red-400' : 'text-gray-400'}>
+              Rec: {isRecording ? '🔴' : '⚪'}
+            </div>
+          </div>
+
           {/* Invite Button */}
           <button
             onClick={generateGuestToken}
@@ -1157,19 +1266,35 @@ export default function StudioRoomPage() {
           {/* Record Button */}
           <button
             onClick={() => {
-              console.log('Record button clicked, isRecording:', isRecording, 'isUploading:', isUploading);
-              if (isRecording) {
-                stopRecording();
-              } else {
-                startRecording();
+              console.log('🔴 Record button clicked');
+              console.log('📊 Button state:', {
+                isRecording,
+                isUploading,
+                roomReady,
+                networkStatus,
+                hasSocket: !!socketRef.current,
+                socketConnected: socketRef.current?.connected
+              });
+              
+              try {
+                if (isRecording) {
+                  console.log('🛑 Stopping recording...');
+                  stopRecording();
+                } else {
+                  console.log('🎬 Starting recording...');
+                  startRecording();
+                }
+              } catch (error) {
+                console.error('❌ Error in record button handler:', error);
+                toast.error('Recording action failed. Please try again.');
               }
             }}
-            disabled={isUploading}
+            disabled={isUploading || !roomReady || networkStatus !== 'connected'}
             className={`flex flex-col items-center gap-2 p-4 rounded-xl transition-all ${
               isRecording 
                 ? 'bg-red-600 hover:bg-red-700' 
                 : 'bg-gray-800 hover:bg-gray-700'
-            } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            } ${(isUploading || !roomReady || networkStatus !== 'connected') ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <div className="w-12 h-12 flex items-center justify-center">
               {isRecording ? (
