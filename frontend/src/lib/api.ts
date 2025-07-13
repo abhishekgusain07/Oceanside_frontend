@@ -320,6 +320,34 @@ export class RecordingAPI {
     }
   }
 
+  /**
+   * Test R2 connection for debugging
+   * @returns Promise<any> - R2 connection status
+   */
+  static async testR2Connection() {
+    try {
+      const response = await api.get('/recordings/test-r2-connection');
+      return response.data;
+    } catch (error) {
+      console.error('R2 connection test failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Test CORS configuration for debugging
+   * @returns Promise<any> - CORS diagnostic information
+   */
+  static async testCors() {
+    try {
+      const response = await api.get('/recordings/test-cors');
+      return response.data;
+    } catch (error) {
+      console.error('CORS test failed:', error);
+      throw error;
+    }
+  }
+
   // Pre-signed URL upload methods (Step 2 of reliable upload architecture)
   /**
    * Generate a pre-signed URL for direct upload to cloud storage
@@ -368,58 +396,98 @@ export class RecordingAPI {
         method: 'PUT'
       });
 
-      const response = await fetch(preSignedUrl, {
-        method: 'PUT',
-        body: chunkBlob,
-        headers: {
-          'Content-Type': contentType,
-        },
-      });
+      // Enhanced timeout and abort controller for better error handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
 
-      console.log(`📡 Upload response received:`, {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        headers: Object.fromEntries(response.headers.entries())
-      });
+      try {
+        const response = await fetch(preSignedUrl, {
+          method: 'PUT',
+          body: chunkBlob,
+          headers: {
+            'Content-Type': contentType,
+          },
+          signal: controller.signal
+        });
 
-      if (!response.ok) {
-        // Try to get response body for more error details
-        let errorBody = '';
-        try {
-          errorBody = await response.text();
-        } catch (e) {
-          console.warn('Could not read error response body');
-        }
-        
-        const errorMessage = `Upload failed with status ${response.status}: ${response.statusText}${errorBody ? ` - ${errorBody}` : ''}`;
-        console.error(`❌ Upload failed:`, {
+        clearTimeout(timeoutId);
+
+        console.log(`📡 Upload response received:`, {
           status: response.status,
           statusText: response.statusText,
-          errorBody,
-          url: preSignedUrl.substring(0, 100) + '...' // Truncate URL for logging
+          ok: response.ok,
+          headers: Object.fromEntries(response.headers.entries())
         });
-        throw new Error(errorMessage);
-      }
 
-      // Extract ETag from response headers (for R2/S3 verification)
-      const etag = response.headers.get('ETag') || response.headers.get('etag') || '';
-      if (!etag) {
-        console.warn('⚠️ No ETag received from upload response - this might cause verification issues');
-      } else {
-        console.log(`✅ Upload successful, ETag: ${etag}`);
-      }
+        if (!response.ok) {
+          // Enhanced error handling with specific CORS detection
+          if (response.status === 0) {
+            throw new Error('CORS_ERROR: Direct upload blocked by CORS policy. Run CORS setup script.');
+          }
+          
+          // Try to get response body for more error details
+          let errorBody = '';
+          try {
+            errorBody = await response.text();
+          } catch (e) {
+            console.warn('Could not read error response body');
+          }
+          
+          const errorMessage = `Upload failed with status ${response.status}: ${response.statusText}${errorBody ? ` - ${errorBody}` : ''}`;
+          console.error(`❌ Upload failed:`, {
+            status: response.status,
+            statusText: response.statusText,
+            errorBody,
+            url: preSignedUrl.substring(0, 100) + '...' // Truncate URL for logging
+          });
+          throw new Error(errorMessage);
+        }
 
-      return etag.replace(/"/g, ''); // Remove quotes from ETag
+        // Extract ETag from response headers (for R2/S3 verification)
+        const etag = response.headers.get('ETag') || response.headers.get('etag') || '';
+        if (!etag) {
+          console.warn('⚠️ No ETag received from upload response - this might cause verification issues');
+        } else {
+          console.log(`✅ Upload successful, ETag: ${etag}`);
+        }
+
+        return etag.replace(/"/g, ''); // Remove quotes from ETag
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        throw fetchError;
+      }
+      
     } catch (error) {
       console.error('❌ Failed to upload chunk to cloud:', error);
       
-      // Provide helpful debugging information
-      if (error instanceof TypeError && error.message.includes('fetch')) {
-        console.error('🌐 This appears to be a network/CORS error. Check:');
-        console.error('1. R2 bucket CORS configuration');
-        console.error('2. Network connectivity');
-        console.error('3. Presigned URL validity');
+      // Enhanced error classification and debugging information
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          const timeoutError = new Error('TIMEOUT: Upload took longer than 60 seconds');
+          console.error('⏱️ Upload timeout - chunk too large or slow connection');
+          throw timeoutError;
+        }
+        
+        if (error.message.includes('CORS_ERROR')) {
+          console.error('🚫 CORS Error Detected!');
+          console.error('🔧 To fix this, run: python backend/scripts/setup_r2_cors.py');
+          console.error('📋 Make sure these environment variables are set:');
+          console.error('   - R2_ACCESS_KEY_ID');
+          console.error('   - R2_SECRET_ACCESS_KEY');
+          console.error('   - R2_ENDPOINT_URL');
+          console.error('   - R2_BUCKET_NAME');
+          throw error;
+        }
+        
+        if (error instanceof TypeError && (error.message.includes('fetch') || error.message.includes('Failed to fetch'))) {
+          const corsError = new Error('NETWORK_ERROR: This appears to be a CORS or network issue');
+          console.error('🌐 Network/CORS Error Detected. Common causes:');
+          console.error('1. 🚫 R2 bucket CORS not configured (run setup_r2_cors.py)');
+          console.error('2. 🌍 Network connectivity issues');
+          console.error('3. 🔗 Invalid or expired presigned URL');
+          console.error('4. 🔒 Firewall blocking R2 endpoint');
+          throw corsError;
+        }
       }
       
       throw error;
