@@ -198,11 +198,31 @@ export class UploadManager {
         } catch (error) {
           console.error(`❌ Upload attempt ${chunk.attempts} failed for chunk ${chunk.chunkIndex}:`, error);
           
-          chunk.error = error instanceof Error ? error.message : String(error);
+          // Enhanced error logging for debugging
+          if (error instanceof Error) {
+            console.error(`Error details:`, {
+              name: error.name,
+              message: error.message,
+              stack: error.stack?.split('\n').slice(0, 3).join('\n') // First 3 lines of stack
+            });
+            chunk.error = error.message;
+          } else if (error && typeof error === 'object') {
+            console.error(`Error object:`, error);
+            chunk.error = JSON.stringify(error);
+          } else {
+            chunk.error = String(error);
+          }
+          
+          // Log network-related errors with more detail
+          if (error instanceof TypeError && error.message.includes('fetch')) {
+            console.error(`🌐 Network error detected - this might be a CORS or connectivity issue`);
+            console.error(`Check: 1) R2 CORS settings, 2) Valid presigned URL, 3) Network connectivity`);
+          }
           
           if (chunk.attempts >= chunk.maxRetries) {
             chunk.status = 'failed';
             console.error(`💀 Chunk ${chunk.chunkIndex} failed permanently after ${chunk.attempts} attempts`);
+            console.error(`Final error: ${chunk.error}`);
           } else {
             chunk.status = 'failed'; // Will be retried
             
@@ -214,7 +234,7 @@ export class UploadManager {
             const jitter = Math.random() * 1000; // Add up to 1 second of jitter
             const retryDelay = baseDelay + jitter;
             
-            console.log(`⏳ Retrying chunk ${chunk.chunkIndex} in ${Math.round(retryDelay)}ms...`);
+            console.log(`⏳ Retrying chunk ${chunk.chunkIndex} in ${Math.round(retryDelay)}ms... (${chunk.maxRetries - chunk.attempts} attempts remaining)`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
           }
           

@@ -360,6 +360,14 @@ export class RecordingAPI {
    */
   static async uploadChunkToCloud(preSignedUrl: string, chunkBlob: Blob, contentType: string): Promise<string> {
     try {
+      console.log(`🚀 Starting direct upload to cloud storage...`);
+      console.log(`📊 Upload details:`, {
+        url: preSignedUrl,
+        blobSize: chunkBlob.size,
+        contentType,
+        method: 'PUT'
+      });
+
       const response = await fetch(preSignedUrl, {
         method: 'PUT',
         body: chunkBlob,
@@ -368,19 +376,52 @@ export class RecordingAPI {
         },
       });
 
+      console.log(`📡 Upload response received:`, {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries())
+      });
+
       if (!response.ok) {
-        throw new Error(`Upload failed with status ${response.status}: ${response.statusText}`);
+        // Try to get response body for more error details
+        let errorBody = '';
+        try {
+          errorBody = await response.text();
+        } catch (e) {
+          console.warn('Could not read error response body');
+        }
+        
+        const errorMessage = `Upload failed with status ${response.status}: ${response.statusText}${errorBody ? ` - ${errorBody}` : ''}`;
+        console.error(`❌ Upload failed:`, {
+          status: response.status,
+          statusText: response.statusText,
+          errorBody,
+          url: preSignedUrl.substring(0, 100) + '...' // Truncate URL for logging
+        });
+        throw new Error(errorMessage);
       }
 
       // Extract ETag from response headers (for R2/S3 verification)
       const etag = response.headers.get('ETag') || response.headers.get('etag') || '';
       if (!etag) {
-        console.warn('No ETag received from upload response');
+        console.warn('⚠️ No ETag received from upload response - this might cause verification issues');
+      } else {
+        console.log(`✅ Upload successful, ETag: ${etag}`);
       }
 
       return etag.replace(/"/g, ''); // Remove quotes from ETag
     } catch (error) {
-      console.error('Failed to upload chunk to cloud:', error);
+      console.error('❌ Failed to upload chunk to cloud:', error);
+      
+      // Provide helpful debugging information
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        console.error('🌐 This appears to be a network/CORS error. Check:');
+        console.error('1. R2 bucket CORS configuration');
+        console.error('2. Network connectivity');
+        console.error('3. Presigned URL validity');
+      }
+      
       throw error;
     }
   }
